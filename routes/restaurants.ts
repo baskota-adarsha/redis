@@ -13,22 +13,39 @@ import { nanoid } from "nanoid";
 import { checkRestaurantExists } from "../middlewares/checkRestaurantId.js";
 import { errorResponse, successResponse } from "../utils/responses.js";
 import { ReviewSchema, type Review } from "../schemas/review.js";
+import {
+  cuisinesKey,
+  cuisineKey,
+  restaurantCuisinesKeyById,
+} from "../utils/keys.js";
 
 const router = express.Router();
 
 router.post("/", validate(RestaurantSchema), async (req, res, next) => {
   const data = req.body as Restaurant;
+
   try {
     const client = await initializeRedisClient();
     const id = nanoid();
     const restaurantKey = restaurantKeyById(id);
+
     const hashData = {
       id,
       name: data.name,
       location: data.location,
     };
-    const addResult = await client.hSet(restaurantKey, hashData);
-    console.log("Add result", addResult);
+
+    await Promise.all([
+      ...data.cuisines.map((cuisine) =>
+        Promise.all([
+          client.sAdd(cuisinesKey, cuisine),
+          client.sAdd(cuisineKey(cuisine), id),
+          client.sAdd(restaurantCuisinesKeyById(id), cuisine),
+        ])
+      ),
+      client.hSet(restaurantKey, hashData),
+    ]);
+
     return successResponse(res, hashData, "Added new restaurant");
   } catch (error) {
     next(error);
@@ -118,12 +135,13 @@ router.get(
     try {
       const client = await initializeRedisClient();
       const restaurantKey = restaurantKeyById(restaurantId);
-      const [viewCount, restaurant] = await Promise.all([
+      const [viewCount, restaurant, cuisines] = await Promise.all([
         client.hIncrBy(restaurantKey, "viewCount", 1),
         client.hGetAll(restaurantKey),
+        client.sMembers(restaurantCuisinesKeyById(restaurantId)),
       ]);
 
-      return successResponse(res, restaurant);
+      return successResponse(res, { ...restaurant, cuisines });
     } catch (error) {
       next(error);
     }
